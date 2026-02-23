@@ -59,6 +59,7 @@ composer run start
 Jesli zmieniales kontrolery, routing albo konfiguracje, uruchom:
 
 composer run setup
+
 composer run start
 
 Uruchomienie reczne (bez Composer scripts)
@@ -66,7 +67,10 @@ Uruchomienie reczne (bez Composer scripts)
 Mozna tez uruchomic projekt recznie komendami:
 
 php .\bin\console cache:clear
+
 php -S 127.0.0.1:8000 -t public
+
+http://127.0.0.1:8000/
 
 Dodanie konta administratora
 
