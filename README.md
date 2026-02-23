@@ -24,6 +24,7 @@ extension=sqlite3
 Dodatkowo warto upewnic sie, ze aktywne sa tez:
 
 extension=ctype
+
 extension=iconv
 
 Po zapisaniu zmian w php.ini zamknij i otworz terminal (PowerShell) ponownie.
