@@ -41,7 +41,9 @@ Jak uruchomic projekt (pierwszy raz)
 Otworz PowerShell w folderze projektu i wpisz:
 
 composer install
+
 composer run setup
+
 composer run start
 
 Po uruchomieniu aplikacja bedzie dostepna pod adresem:
