@@ -95,17 +95,88 @@ function tripCalc(t) {
   return t.calc || calcFallback(t);
 }
 
-function layout(content) {
+function formatTripDates(trip) {
+  if (trip.start_date && trip.end_date) return `${esc(trip.start_date)} — ${esc(trip.end_date)}`;
+  if (trip.start_date) return esc(trip.start_date);
+  if (trip.end_date) return esc(trip.end_date);
+  return "-";
+}
+
+function countTripsThisMonth() {
+  const now = new Date();
+  const month = now.getMonth();
+  const year = now.getFullYear();
+
+  return state.trips.filter((trip) => {
+    if (!trip.start_date) return false;
+    const d = new Date(trip.start_date);
+    if (Number.isNaN(d.getTime())) return false;
+    return d.getMonth() === month && d.getFullYear() === year;
+  }).length;
+}
+
+function layout(content, activePage = "dashboard") {
+  const loggedIn = Boolean(state.user);
+
   app.innerHTML = `
-    <div class="container" style="max-width:1100px;margin:20px auto;padding:0 16px;">
-      <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:16px;flex-wrap:wrap;">
-        <h1 style="margin:0;">Travel Cost Planner</h1>
-        <div id="top-actions"></div>
-      </div>
-      ${content}
+    <div class="app-shell">
+      <header class="topbar">
+        <div class="brand">
+          <div class="brand-icon" aria-hidden="true">✦</div>
+          <div>
+            <h1>Travel Cost Planner</h1>
+            <p>${loggedIn ? "Plan routes and calculate travel expenses" : "Plan smarter trips and split costs easily"}</p>
+          </div>
+        </div>
+
+        ${
+          loggedIn
+            ? `
+              <nav class="main-nav" aria-label="Main navigation">
+                <button class="nav-link ${activePage === "dashboard" ? "is-active" : ""}" id="nav-dashboard" type="button">Dashboard</button>
+                <button class="nav-link ${activePage === "trips" ? "is-active" : ""}" id="nav-my-trips" type="button">My Trips</button>
+                <button class="nav-link" id="nav-new-trip" type="button">New Trip</button>
+                <button class="nav-link" id="nav-about" type="button">About</button>
+              </nav>
+            `
+            : ""
+        }
+
+        <div id="top-actions" class="top-actions"></div>
+      </header>
+
+      <main class="page-container">
+        ${content}
+      </main>
     </div>
   `;
+
   renderTopActions();
+  bindMainNavigation();
+}
+
+function bindMainNavigation() {
+  document.getElementById("nav-dashboard")?.addEventListener("click", async () => {
+    state.editingTripId = null;
+    await loadTrips();
+    renderTripsScreen("dashboard");
+  });
+
+  document.getElementById("nav-my-trips")?.addEventListener("click", async () => {
+    state.editingTripId = null;
+    await loadTrips();
+    renderTripsScreen("trips");
+  });
+
+  document.getElementById("nav-new-trip")?.addEventListener("click", () => {
+    state.editingTripId = null;
+    renderTripsScreen("dashboard");
+    setTimeout(() => document.querySelector('input[name="title"]')?.focus(), 100);
+  });
+
+  document.getElementById("nav-about")?.addEventListener("click", () => {
+    alert("Travel Cost Planner helps you calculate fuel, route, lodging, food and other trip costs.");
+  });
 }
 
 function renderTopActions() {
@@ -120,18 +191,18 @@ function renderTopActions() {
   const isAdmin = (state.user.roles || []).includes("ROLE_ADMIN");
 
   el.innerHTML = `
-    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
-      <span>${esc(state.user.email)}</span>
-      <button id="btn-my-trips">My trips</button>
-      ${isAdmin ? `<button id="btn-admin-panel">Admin panel</button>` : ""}
-      <button id="btn-logout">Logout</button>
+    <div class="user-actions">
+      <span class="user-email" title="${esc(state.user.email)}">${esc(state.user.email)}</span>
+      <button class="btn btn-light" id="btn-my-trips" type="button">My trips</button>
+      ${isAdmin ? `<button class="btn btn-light" id="btn-admin-panel" type="button">Admin panel</button>` : ""}
+      <button class="btn btn-light btn-icon-right" id="btn-logout" type="button">Logout <span aria-hidden="true">↗</span></button>
     </div>
   `;
 
   document.getElementById("btn-my-trips")?.addEventListener("click", async () => {
     state.editingTripId = null;
     await loadTrips();
-    renderTripsScreen();
+    renderTripsScreen("trips");
   });
 
   document.getElementById("btn-admin-panel")?.addEventListener("click", async () => {
@@ -152,7 +223,7 @@ function renderTopActions() {
 function showMsg(id, text, isError = false) {
   const el = document.getElementById(id);
   if (!el) return;
-  el.innerHTML = `<div style="padding:10px;border-radius:8px;border:1px solid ${isError ? "#cc6666" : "#66aa66"};background:${isError ? "#ffeaea" : "#ecfff0"};">${esc(text)}</div>`;
+  el.innerHTML = `<div class="message ${isError ? "message-error" : "message-success"}">${esc(text)}</div>`;
 }
 
 async function loadMe() {
@@ -197,6 +268,14 @@ function ensureMapInit() {
   const el = document.getElementById("route-map");
   if (!el || typeof L === "undefined") return;
 
+  if (routePicker.map && routePicker.map._container !== el) {
+    routePicker.map.remove();
+    routePicker.map = null;
+    routePicker.markerA = null;
+    routePicker.markerB = null;
+    routePicker.line = null;
+  }
+
   if (!routePicker.map) {
     routePicker.map = L.map("route-map").setView([52.4064, 16.9252], 11);
     L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
@@ -207,6 +286,7 @@ function ensureMapInit() {
     routePicker.map.on("click", (e) => {
       setRoutePoint(routePicker.clickMode, e.latlng.lat, e.latlng.lng, true);
       routePicker.clickMode = routePicker.clickMode === "A" ? "B" : "A";
+      updateRouteModeButtons();
     });
   }
 
@@ -216,6 +296,7 @@ function ensureMapInit() {
 function resetRouteMapState() {
   routePicker.a = null;
   routePicker.b = null;
+  routePicker.clickMode = "A";
 
   if (routePicker.line && routePicker.map) {
     routePicker.map.removeLayer(routePicker.line);
@@ -229,6 +310,14 @@ function resetRouteMapState() {
     routePicker.map.removeLayer(routePicker.markerB);
     routePicker.markerB = null;
   }
+}
+
+function updateRouteModeButtons() {
+  const btnA = document.getElementById("btn-mode-a");
+  const btnB = document.getElementById("btn-mode-b");
+
+  btnA?.classList.toggle("is-active", routePicker.clickMode === "A");
+  btnB?.classList.toggle("is-active", routePicker.clickMode === "B");
 }
 
 function setRoutePoint(which, lat, lng, updateInputs = false, label = "") {
@@ -325,7 +414,7 @@ async function buildRouteAndFillDistance() {
 
     const routeInfo = document.getElementById("route-info");
     if (routeInfo) {
-      routeInfo.innerHTML = `Маршрут: <strong>${Number(data.distance_km).toFixed(2)} km</strong>, час: <strong>${Number(data.duration_min).toFixed(1)} хв</strong>`;
+      routeInfo.innerHTML = `Route distance: <strong>${Number(data.distance_km).toFixed(2)} km</strong> · Estimated time: <strong>${Number(data.duration_min).toFixed(1)} min</strong>`;
     }
   } catch (err) {
     alert(err.message || "Помилка побудови маршруту");
@@ -334,64 +423,57 @@ async function buildRouteAndFillDistance() {
 
 function renderAuthScreen(activeTab = "login") {
   layout(`
-    <div style="max-width:520px;margin:0 auto;">
-      <div style="border:1px solid #ddd;border-radius:12px;padding:16px;background:#fff;">
-        <h2 style="margin-top:0;margin-bottom:14px;">Welcome</h2>
+    <section class="auth-page">
+      <div class="auth-hero">
+        <span class="eyebrow">Travel planning</span>
+        <h2>Calculate your trip costs in one clean dashboard.</h2>
+        <p>Save routes, estimate fuel and split expenses between passengers.</p>
+      </div>
 
-        <div style="display:flex;gap:8px;margin-bottom:14px;">
-          <button id="tab-login" type="button" style="flex:1;${
-            activeTab === "login" ? "background:#2563eb;color:#fff;border-color:#2563eb;" : ""
-          }">
-            Login
-          </button>
-          <button id="tab-register" type="button" style="flex:1;${
-            activeTab === "register" ? "background:#2563eb;color:#fff;border-color:#2563eb;" : ""
-          }">
-            Register
-          </button>
+      <div class="auth-card card">
+        <h2>Welcome</h2>
+        <p class="card-subtitle">${activeTab === "login" ? "Log in to continue planning your trips." : "Create an account and start planning."}</p>
+
+        <div class="auth-tabs">
+          <button id="tab-login" type="button" class="tab-btn ${activeTab === "login" ? "is-active" : ""}">Login</button>
+          <button id="tab-register" type="button" class="tab-btn ${activeTab === "register" ? "is-active" : ""}">Register</button>
         </div>
 
         ${
           activeTab === "login"
             ? `
-          <form id="login-form">
-            <div style="margin-bottom:10px;">
-              <label>Email</label><br>
-              <input type="email" name="email" required style="width:100%;padding:8px;">
-            </div>
-            <div style="margin-bottom:10px;">
-              <label>Password</label><br>
-              <input type="password" name="password" required style="width:100%;padding:8px;">
-            </div>
-            <button type="submit" style="width:100%;">Login</button>
+          <form id="login-form" class="form-stack">
+            <label class="field">
+              <span>Email</span>
+              <input type="email" name="email" required placeholder="you@example.com">
+            </label>
+            <label class="field">
+              <span>Password</span>
+              <input type="password" name="password" required placeholder="Your password">
+            </label>
+            <button type="submit" class="btn btn-primary btn-full">Login</button>
           </form>
-          <div style="margin-top:10px;font-size:13px;color:#666;">
-            No account?
-            <a href="#" id="switch-to-register">Create one</a>
-          </div>
+          <p class="auth-switch">No account? <a href="#" id="switch-to-register">Create one</a></p>
         `
             : `
-          <form id="register-form">
-            <div style="margin-bottom:10px;">
-              <label>Email</label><br>
-              <input type="email" name="email" required style="width:100%;padding:8px;">
-            </div>
-            <div style="margin-bottom:10px;">
-              <label>Password</label><br>
-              <input type="password" name="password" required minlength="6" style="width:100%;padding:8px;">
-            </div>
-            <button type="submit" style="width:100%;">Register</button>
+          <form id="register-form" class="form-stack">
+            <label class="field">
+              <span>Email</span>
+              <input type="email" name="email" required placeholder="you@example.com">
+            </label>
+            <label class="field">
+              <span>Password</span>
+              <input type="password" name="password" required minlength="6" placeholder="Minimum 6 characters">
+            </label>
+            <button type="submit" class="btn btn-primary btn-full">Register</button>
           </form>
-          <div style="margin-top:10px;font-size:13px;color:#666;">
-            Already have an account?
-            <a href="#" id="switch-to-login">Login</a>
-          </div>
+          <p class="auth-switch">Already have an account? <a href="#" id="switch-to-login">Login</a></p>
         `
         }
-      </div>
 
-      <div id="auth-msg" style="margin-top:12px;"></div>
-    </div>
+        <div id="auth-msg" class="message-area"></div>
+      </div>
+    </section>
   `);
 
   document.getElementById("tab-login")?.addEventListener("click", () => renderAuthScreen("login"));
@@ -445,7 +527,7 @@ function renderAuthScreen(activeTab = "login") {
   });
 }
 
-function renderTripsScreen() {
+function renderTripsScreen(activePage = "dashboard") {
   const editing = getEditingTrip();
   const t = editing || emptyTrip();
 
@@ -456,13 +538,18 @@ function renderTripsScreen() {
       const c = tripCalc(trip);
       return `
       <tr>
-        <td>${esc(trip.title)}</td>
-        <td>${trip.start_date ? esc(trip.start_date) : "-"}</td>
-        <td>${money(c.totalCost)}</td>
+        <td>
+          <div class="table-title">${esc(trip.title)}</div>
+          <div class="table-muted">${Number(trip.distance_km || 0).toFixed(2)} km</div>
+        </td>
+        <td>${formatTripDates(trip)}</td>
         <td>${money(c.costPerPerson)}</td>
-        <td style="white-space:nowrap;">
-          <button data-edit-trip="${trip.id}">Edit</button>
-          <button data-del-trip="${trip.id}">Delete</button>
+        <td>${money(c.totalCost)}</td>
+        <td>
+          <div class="table-actions">
+            <button class="btn btn-small btn-light" data-edit-trip="${trip.id}" type="button">Edit</button>
+            <button class="btn btn-small btn-danger" data-del-trip="${trip.id}" type="button">Delete</button>
+          </div>
         </td>
       </tr>`;
     })
@@ -471,110 +558,248 @@ function renderTripsScreen() {
   const totalAll = state.trips.reduce((sum, trip) => sum + Number(tripCalc(trip).totalCost || 0), 0);
   const totalFuel = state.trips.reduce((sum, trip) => sum + Number(tripCalc(trip).breakdown?.fuel || 0), 0);
   const totalExtras = state.trips.reduce((sum, trip) => sum + Number(tripCalc(trip).extrasCost || 0), 0);
+  const tripsThisMonth = countTripsThisMonth();
 
   layout(`
-    <div style="display:grid;grid-template-columns:360px 1fr;gap:16px;align-items:start;">
-      <div style="border:1px solid #ddd;border-radius:10px;padding:16px;">
-        <h2 style="margin-top:0;">${editing ? "Edit trip" : "New trip"}</h2>
-        <form id="trip-form">
-          <div style="margin-bottom:8px;">
-            <label>Title</label><br>
-            <input name="title" required maxlength="255" value="${esc(t.title || "")}" style="width:100%;padding:8px;">
+    <section class="dashboard-grid">
+      <aside class="card trip-form-card">
+        <div class="section-heading with-accent">
+          <div>
+            <h2>${editing ? "Edit trip" : "Create a new trip"}</h2>
+            <p>Plan your route and estimate the cost of your trip</p>
           </div>
+        </div>
 
-          <div style="margin-bottom:10px;padding:10px;border:1px solid #ddd;border-radius:10px;background:#fafafa;">
-            <div style="font-weight:600;margin-bottom:8px;">Route map (A → B)</div>
+        <form id="trip-form" class="trip-form">
+          <label class="field field-full">
+            <span>Title</span>
+            <input name="title" required maxlength="255" value="${esc(t.title || "")}" placeholder="e.g. Weekend in the mountains">
+          </label>
 
-            <div style="margin-bottom:8px;">
-              <label>Address A</label><br>
-              <div style="display:flex;gap:6px;">
-                <input id="route-a-address" type="text" placeholder="Start address" style="width:100%;padding:8px;">
-                <button type="button" id="btn-geocode-a">Find A</button>
+          <div class="route-card">
+            <div class="route-card-header">
+              <div>
+                <h3>Route map (A → B)</h3>
+                <p>Find addresses or choose points directly on the map</p>
               </div>
             </div>
 
-            <div style="margin-bottom:8px;">
-              <label>Address B</label><br>
-              <div style="display:flex;gap:6px;">
-                <input id="route-b-address" type="text" placeholder="Destination address" style="width:100%;padding:8px;">
-                <button type="button" id="btn-geocode-b">Find B</button>
+            <label class="field route-field">
+              <span>Address A</span>
+              <div class="input-action">
+                <input id="route-a-address" type="text" placeholder="Start address">
+                <button type="button" id="btn-geocode-a" class="btn btn-primary btn-compact">Find A</button>
               </div>
-            </div>
+            </label>
 
-            <div style="display:none;">
+            <label class="field route-field">
+              <span>Address B</span>
+              <div class="input-action">
+                <input id="route-b-address" type="text" placeholder="Destination address">
+                <button type="button" id="btn-geocode-b" class="btn btn-primary btn-compact">Find B</button>
+              </div>
+            </label>
+
+            <div class="hidden-fields" aria-hidden="true">
               <input id="route-a-lat" type="text">
               <input id="route-a-lng" type="text">
               <input id="route-b-lat" type="text">
               <input id="route-b-lng" type="text">
             </div>
 
-            <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px;">
-              <button type="button" id="btn-mode-a">Click map: A</button>
-              <button type="button" id="btn-mode-b">Click map: B</button>
-              <button type="button" id="btn-build-route">Build route</button>
+            <div class="route-actions">
+              <button type="button" id="btn-mode-a" class="btn btn-outline is-active">Click map: A</button>
+              <button type="button" id="btn-mode-b" class="btn btn-outline">Click map: B</button>
+              <button type="button" id="btn-build-route" class="btn btn-light">Build route</button>
             </div>
 
-            <div id="route-map" style="height:260px;border:1px solid #ddd;border-radius:10px;"></div>
-            <div id="route-info" style="margin-top:8px;font-size:13px;color:#555;"></div>
+            <div id="route-map" class="route-map"></div>
+            <div id="route-info" class="route-info"></div>
           </div>
 
-          <div style="margin-bottom:8px;"><label>Distance (km)</label><br><input name="distance_km" type="number" min="0" step="0.01" value="${Number(t.distance_km || 0)}" style="width:100%;padding:8px;"></div>
-          <div style="margin-bottom:8px;"><label>Fuel price</label><br><input name="fuel_price" type="number" min="0" step="0.01" value="${Number(t.fuel_price || 0)}" style="width:100%;padding:8px;"></div>
-          <div style="margin-bottom:8px;"><label>Fuel consumption /100km</label><br><input name="fuel_consumption_per_100" type="number" min="0" step="0.01" value="${Number(t.fuel_consumption_per_100 || 0)}" style="width:100%;padding:8px;"></div>
-          <div style="margin-bottom:8px;"><label>People count</label><br><input name="people_count" type="number" min="1" step="1" value="${Number(t.people_count || 1)}" style="width:100%;padding:8px;"></div>
-          <div style="margin-bottom:8px;"><label>Route cost</label><br><input name="route_cost" type="number" min="0" step="0.01" value="${Number(t.route_cost || 0)}" style="width:100%;padding:8px;"></div>
-          <div style="margin-bottom:8px;"><label>Lodging cost</label><br><input name="lodging_cost" type="number" min="0" step="0.01" value="${Number(t.lodging_cost || 0)}" style="width:100%;padding:8px;"></div>
-          <div style="margin-bottom:8px;"><label>Food cost</label><br><input name="food_cost" type="number" min="0" step="0.01" value="${Number(t.food_cost || 0)}" style="width:100%;padding:8px;"></div>
-          <div style="margin-bottom:8px;"><label>Other cost</label><br><input name="other_cost" type="number" min="0" step="0.01" value="${Number(t.other_cost || 0)}" style="width:100%;padding:8px;"></div>
-          <div style="margin-bottom:8px;"><label>Start date</label><br><input name="start_date" type="date" value="${esc(t.start_date || "")}" style="width:100%;padding:8px;"></div>
-          <div style="margin-bottom:8px;"><label>End date</label><br><input name="end_date" type="date" value="${esc(t.end_date || "")}" style="width:100%;padding:8px;"></div>
-          <div style="display:flex;gap:8px;flex-wrap:wrap;">
-            <button type="submit">${editing ? "Update trip" : "Create trip"}</button>
-            ${editing ? `<button type="button" id="cancel-edit">Cancel</button>` : ""}
+          <div class="cost-grid">
+            <label class="field cost-field">
+              <span class="field-icon">⌁</span>
+              <span>Distance (km)</span>
+              <input name="distance_km" type="number" min="0" step="0.01" value="${Number(t.distance_km || 0)}">
+            </label>
+
+            <label class="field cost-field">
+              <span class="field-icon">⛽</span>
+              <span>Fuel price (zł/L)</span>
+              <input name="fuel_price" type="number" min="0" step="0.01" value="${Number(t.fuel_price || 0)}">
+            </label>
+
+            <label class="field cost-field">
+              <span class="field-icon">💧</span>
+              <span>Fuel consumption (L/100km)</span>
+              <input name="fuel_consumption_per_100" type="number" min="0" step="0.01" value="${Number(t.fuel_consumption_per_100 || 0)}">
+            </label>
+
+            <label class="field cost-field">
+              <span class="field-icon">👥</span>
+              <span>People count</span>
+              <input name="people_count" type="number" min="1" step="1" value="${Number(t.people_count || 1)}">
+            </label>
+
+            <label class="field cost-field">
+              <span class="field-icon">🛣</span>
+              <span>Route cost (zł)</span>
+              <input name="route_cost" type="number" min="0" step="0.01" value="${Number(t.route_cost || 0)}">
+            </label>
+
+            <label class="field cost-field">
+              <span class="field-icon">🛏</span>
+              <span>Lodging cost (zł)</span>
+              <input name="lodging_cost" type="number" min="0" step="0.01" value="${Number(t.lodging_cost || 0)}">
+            </label>
+
+            <label class="field cost-field">
+              <span class="field-icon">🍽</span>
+              <span>Food cost (zł)</span>
+              <input name="food_cost" type="number" min="0" step="0.01" value="${Number(t.food_cost || 0)}">
+            </label>
+
+            <label class="field cost-field">
+              <span class="field-icon">•••</span>
+              <span>Other cost (zł)</span>
+              <input name="other_cost" type="number" min="0" step="0.01" value="${Number(t.other_cost || 0)}">
+            </label>
+          </div>
+
+          <div class="date-grid">
+            <label class="field">
+              <span>Start date</span>
+              <input name="start_date" type="date" value="${esc(t.start_date || "")}">
+            </label>
+
+            <label class="field">
+              <span>End date</span>
+              <input name="end_date" type="date" value="${esc(t.end_date || "")}">
+            </label>
+          </div>
+
+          <div class="form-actions">
+            <button type="submit" class="btn btn-primary btn-full">${editing ? "Update trip" : "Create trip"}</button>
+            ${editing ? `<button type="button" id="cancel-edit" class="btn btn-light btn-full">Cancel</button>` : ""}
           </div>
         </form>
-        <div id="trip-form-msg" style="margin-top:10px;"></div>
-      </div>
 
-      <div>
-        <div style="display:grid;grid-template-columns:repeat(3,minmax(150px,1fr));gap:12px;margin-bottom:14px;">
-          <div style="border:1px solid #ddd;border-radius:10px;padding:12px;"><div>Trips</div><strong>${state.trips.length}</strong></div>
-          <div style="border:1px solid #ddd;border-radius:10px;padding:12px;"><div>Total fuel</div><strong>${money(totalFuel)}</strong></div>
-          <div style="border:1px solid #ddd;border-radius:10px;padding:12px;"><div>Total all</div><strong>${money(totalAll)}</strong></div>
+        <div id="trip-form-msg" class="message-area"></div>
+      </aside>
+
+      <section class="dashboard-content">
+        <div class="stats-grid">
+          <div class="stat-card card">
+            <div class="stat-icon purple">▣</div>
+            <div>
+              <strong>${state.trips.length}</strong>
+              <span>Total trips</span>
+            </div>
+          </div>
+
+          <div class="stat-card card">
+            <div class="stat-icon green">♢</div>
+            <div>
+              <strong>${money(totalFuel)}</strong>
+              <span>Total fuel</span>
+            </div>
+          </div>
+
+          <div class="stat-card card">
+            <div class="stat-icon orange">▰</div>
+            <div>
+              <strong>${money(totalAll)}</strong>
+              <span>Total all</span>
+            </div>
+          </div>
+
+          <div class="stat-card card">
+            <div class="stat-icon blue">●</div>
+            <div>
+              <strong>${tripsThisMonth}</strong>
+              <span>Trips this month</span>
+            </div>
+          </div>
         </div>
 
-        <div style="border:1px solid #ddd;border-radius:10px;padding:16px;">
-          <h2 style="margin-top:0;">My trips</h2>
-          <div style="overflow:auto;">
-            <table style="width:100%;border-collapse:collapse;">
+        <div class="card trips-table-card">
+          <div class="table-card-header">
+            <div class="section-title-row">
+              <div class="section-icon">▤</div>
+              <div>
+                <h2>My trips</h2>
+                <p>Manage saved routes and cost calculations</p>
+              </div>
+            </div>
+          </div>
+
+          <div class="table-wrap">
+            <table class="data-table">
               <thead>
                 <tr>
-                  <th style="text-align:left;padding:8px;border-bottom:1px solid #ddd;">Title</th>
-                  <th style="text-align:left;padding:8px;border-bottom:1px solid #ddd;">Date</th>
-                  <th style="text-align:left;padding:8px;border-bottom:1px solid #ddd;">Total</th>
-                  <th style="text-align:left;padding:8px;border-bottom:1px solid #ddd;">Per person</th>
-                  <th style="text-align:left;padding:8px;border-bottom:1px solid #ddd;">Actions</th>
+                  <th>Title</th>
+                  <th>Dates</th>
+                  <th>Per person</th>
+                  <th>Total</th>
+                  <th>Actions</th>
                 </tr>
               </thead>
-              <tbody>${rows || `<tr><td colspan="5" style="padding:10px;">No trips yet.</td></tr>`}</tbody>
+              <tbody>${rows || `<tr><td colspan="5" class="empty-row">No trips yet.</td></tr>`}</tbody>
             </table>
           </div>
-          <div style="margin-top:10px;">Extras total (all trips): <strong>${money(totalExtras)}</strong></div>
+
+          <div class="table-footer">Extras total (all trips): <strong>${money(totalExtras)}</strong></div>
         </div>
-      </div>
-    </div>
-  `);
+
+        ${
+          state.trips.length === 0
+            ? `
+              <div class="card empty-state">
+                <div class="empty-illustration" aria-hidden="true">
+                  <div class="empty-suitcase">▣</div>
+                  <div class="empty-sign">↗</div>
+                </div>
+                <h2>No trips planned yet</h2>
+                <p>Create your first trip and start planning your adventure.</p>
+                <button class="btn btn-primary" id="empty-create-trip" type="button">＋ Create your first trip</button>
+              </div>
+            `
+            : `
+              <div class="card summary-card">
+                <div class="section-title-row">
+                  <div class="section-icon">✓</div>
+                  <div>
+                    <h2>Cost summary</h2>
+                    <p>Your current saved trip overview</p>
+                  </div>
+                </div>
+                <div class="summary-grid">
+                  <div><span>Fuel</span><strong>${money(totalFuel)}</strong></div>
+                  <div><span>Extras</span><strong>${money(totalExtras)}</strong></div>
+                  <div><span>Total</span><strong>${money(totalAll)}</strong></div>
+                </div>
+              </div>
+            `
+        }
+      </section>
+    </section>
+  `, activePage);
 
   document.getElementById("trip-form")?.addEventListener("submit", onTripSubmit);
-  document.getElementById("cancel-edit")?.addEventListener("click", async () => {
+  document.getElementById("cancel-edit")?.addEventListener("click", () => {
     state.editingTripId = null;
-    renderTripsScreen();
+    renderTripsScreen(activePage);
+  });
+
+  document.getElementById("empty-create-trip")?.addEventListener("click", () => {
+    document.querySelector('input[name="title"]')?.focus();
   });
 
   app.querySelectorAll("[data-edit-trip]").forEach((btn) => {
     btn.addEventListener("click", () => {
       state.editingTripId = Number(btn.getAttribute("data-edit-trip"));
-      renderTripsScreen();
+      renderTripsScreen(activePage);
     });
   });
 
@@ -586,7 +811,7 @@ function renderTripsScreen() {
         await api(`/api/trip/${id}`, { method: "DELETE" });
         state.editingTripId = null;
         await loadTrips();
-        renderTripsScreen();
+        renderTripsScreen(activePage);
       } catch (err) {
         alert(err.message);
       }
@@ -594,6 +819,7 @@ function renderTripsScreen() {
   });
 
   ensureMapInit();
+  updateRouteModeButtons();
 
   document.getElementById("btn-geocode-a")?.addEventListener("click", () => geocodeAddress("A"));
   document.getElementById("btn-geocode-b")?.addEventListener("click", () => geocodeAddress("B"));
@@ -601,9 +827,11 @@ function renderTripsScreen() {
 
   document.getElementById("btn-mode-a")?.addEventListener("click", () => {
     routePicker.clickMode = "A";
+    updateRouteModeButtons();
   });
   document.getElementById("btn-mode-b")?.addEventListener("click", () => {
     routePicker.clickMode = "B";
+    updateRouteModeButtons();
   });
 }
 
@@ -662,11 +890,13 @@ function renderAdminScreen() {
     <tr>
       <td>${u.id}</td>
       <td>${esc(u.email)}</td>
-      <td>${esc((u.roles || []).join(", "))}</td>
-      <td style="white-space:nowrap;">
-        <button data-role-user="${u.id}">ROLE_USER</button>
-        <button data-role-admin="${u.id}">ROLE_ADMIN</button>
-        <button data-del-user="${u.id}">Delete</button>
+      <td><span class="role-badge">${esc((u.roles || []).join(", "))}</span></td>
+      <td>
+        <div class="table-actions">
+          <button class="btn btn-small btn-light" data-role-user="${u.id}" type="button">ROLE_USER</button>
+          <button class="btn btn-small btn-primary" data-role-admin="${u.id}" type="button">ROLE_ADMIN</button>
+          <button class="btn btn-small btn-danger" data-del-user="${u.id}" type="button">Delete</button>
+        </div>
       </td>
     </tr>`
     )
@@ -681,49 +911,71 @@ function renderAdminScreen() {
         <td>${esc(t.user_email || "")}</td>
         <td>${esc(t.title || "")}</td>
         <td>${money(c.totalCost || 0)}</td>
-        <td><button data-del-admin-trip="${t.id}">Delete</button></td>
+        <td><button class="btn btn-small btn-danger" data-del-admin-trip="${t.id}" type="button">Delete</button></td>
       </tr>`;
     })
     .join("");
 
   layout(`
-    <div style="display:grid;grid-template-columns:1fr;gap:16px;">
-      <div style="border:1px solid #ddd;border-radius:10px;padding:16px;">
-        <h2 style="margin-top:0;">Admin: users</h2>
-        <div style="overflow:auto;">
-          <table style="width:100%;border-collapse:collapse;">
+    <section class="admin-page">
+      <div class="section-heading">
+        <div>
+          <span class="eyebrow">Admin dashboard</span>
+          <h2>System management</h2>
+          <p>Manage users, roles and saved trips.</p>
+        </div>
+      </div>
+
+      <div class="card admin-card">
+        <div class="section-title-row">
+          <div class="section-icon">👤</div>
+          <div>
+            <h2>Admin: users</h2>
+            <p>Change user roles or remove accounts</p>
+          </div>
+        </div>
+
+        <div class="table-wrap">
+          <table class="data-table">
             <thead>
               <tr>
-                <th style="text-align:left;padding:8px;border-bottom:1px solid #ddd;">ID</th>
-                <th style="text-align:left;padding:8px;border-bottom:1px solid #ddd;">Email</th>
-                <th style="text-align:left;padding:8px;border-bottom:1px solid #ddd;">Roles</th>
-                <th style="text-align:left;padding:8px;border-bottom:1px solid #ddd;">Actions</th>
+                <th>ID</th>
+                <th>Email</th>
+                <th>Roles</th>
+                <th>Actions</th>
               </tr>
             </thead>
-            <tbody>${usersRows || `<tr><td colspan="4" style="padding:10px;">No users.</td></tr>`}</tbody>
+            <tbody>${usersRows || `<tr><td colspan="4" class="empty-row">No users.</td></tr>`}</tbody>
           </table>
         </div>
       </div>
 
-      <div style="border:1px solid #ddd;border-radius:10px;padding:16px;">
-        <h2 style="margin-top:0;">Admin: trips</h2>
-        <div style="overflow:auto;">
-          <table style="width:100%;border-collapse:collapse;">
+      <div class="card admin-card">
+        <div class="section-title-row">
+          <div class="section-icon">🧳</div>
+          <div>
+            <h2>Admin: trips</h2>
+            <p>Review and delete user trips</p>
+          </div>
+        </div>
+
+        <div class="table-wrap">
+          <table class="data-table">
             <thead>
               <tr>
-                <th style="text-align:left;padding:8px;border-bottom:1px solid #ddd;">ID</th>
-                <th style="text-align:left;padding:8px;border-bottom:1px solid #ddd;">User</th>
-                <th style="text-align:left;padding:8px;border-bottom:1px solid #ddd;">Title</th>
-                <th style="text-align:left;padding:8px;border-bottom:1px solid #ddd;">Total</th>
-                <th style="text-align:left;padding:8px;border-bottom:1px solid #ddd;">Actions</th>
+                <th>ID</th>
+                <th>User</th>
+                <th>Title</th>
+                <th>Total</th>
+                <th>Actions</th>
               </tr>
             </thead>
-            <tbody>${tripsRows || `<tr><td colspan="5" style="padding:10px;">No trips.</td></tr>`}</tbody>
+            <tbody>${tripsRows || `<tr><td colspan="5" class="empty-row">No trips.</td></tr>`}</tbody>
           </table>
         </div>
       </div>
-    </div>
-  `);
+    </section>
+  `, "admin");
 
   app.querySelectorAll("[data-role-user]").forEach((btn) => {
     btn.addEventListener("click", () => changeUserRole(Number(btn.dataset.roleUser), "ROLE_USER"));
